@@ -118,6 +118,33 @@
         window.getUploadedLogoSvg = getUploadedLogoSvg;
 
         const LOCAL_STORAGE_LOGO_KEY = 'seoulmate_custom_logo_data';
+        const STORAGE_KEYS = {
+            MENUS: 'seoulmate_menus',
+            INVENTORY: 'seoulmate_inventory',
+            SALES: 'seoulmate_sales',
+            COUNTERS: 'seoulmate_counters',
+            SESSION: 'seoulmate_erp_active_session'
+        };
+
+        function loadStoredData(key, fallback = []) {
+            try {
+                const item = localStorage.getItem(key);
+                return item ? JSON.parse(item) : fallback;
+            } catch (e) {
+                console.error(`Error loading localStorage key "${key}":`, e);
+                return fallback;
+            }
+        }
+
+        function saveStoredData(key, data) {
+            try {
+                localStorage.setItem(key, JSON.stringify(data));
+                return true;
+            } catch (e) {
+                console.error(`Error saving localStorage key "${key}":`, e);
+                return false;
+            }
+        }
 
         function loadStoredLogo() {
             try { return localStorage.getItem(LOCAL_STORAGE_LOGO_KEY); } catch (e) { return null; }
@@ -1616,7 +1643,7 @@
             if (uInput) uInput.value = '';
             if (pInput) pInput.value = '';
 
-            showToast('ออกจากระบบเรียบร้อย', 'กลับสู่หน้าเข้าสู่ระบบแล้ว');
+            showToast('ออกจากระบบเรียบร้อย', 'กลับสู่หน้าเข้าสู่ระบบแล้ว (ข้อมูลเมนู, สต็อก และยอดขายยังคงอยู่ครบถ้วน)');
             window.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
@@ -1645,6 +1672,43 @@
         let totalSalesToday = 0;
         let totalOrdersToday = 0;
         let uploadedMenuImageDataUrl = null;
+
+        function initPersistentState() {
+            menuData = loadStoredData(STORAGE_KEYS.MENUS, []);
+            inventoryData = loadStoredData(STORAGE_KEYS.INVENTORY, []);
+            salesData = loadStoredData(STORAGE_KEYS.SALES, []);
+
+            const counters = loadStoredData(STORAGE_KEYS.COUNTERS, { saleCounter: 1, receiptCounter: 1 });
+            saleCounter = Number(counters.saleCounter) || 1;
+            receiptCounter = Number(counters.receiptCounter) || 1;
+
+            // Compute default counters if data exists
+            if (salesData.length > 0) {
+                const maxSaleNum = salesData.reduce((max, s) => {
+                    const match = String(s.id || '').match(/SA-(\d+)/i);
+                    return match ? Math.max(max, parseInt(match[1], 10)) : max;
+                }, 0);
+                saleCounter = Math.max(saleCounter, maxSaleNum + 1);
+            }
+
+            if (inventoryData.length > 0) {
+                const maxReceiptNum = inventoryData.reduce((max, i) => {
+                    const match = String(i.lastReceiptNo || '').match(/SO-(\d+)/i);
+                    return match ? Math.max(max, parseInt(match[1], 10)) : max;
+                }, 0);
+                receiptCounter = Math.max(receiptCounter, maxReceiptNum + 1);
+            }
+        }
+
+        function saveAllAppState() {
+            saveStoredData(STORAGE_KEYS.MENUS, menuData);
+            saveStoredData(STORAGE_KEYS.INVENTORY, inventoryData);
+            saveStoredData(STORAGE_KEYS.SALES, salesData);
+            saveStoredData(STORAGE_KEYS.COUNTERS, {
+                saleCounter: saleCounter,
+                receiptCounter: receiptCounter
+            });
+        }
 
         function getNextProductCode() {
             let maxNum = 0;
@@ -1965,10 +2029,11 @@
             };
 
             menuData.unshift(newMenuItem);
+            saveStoredData(STORAGE_KEYS.MENUS, menuData);
             renderMenuGrid();
             renderPosItems();
             closeAddMenuModal();
-            showToast('บันทึกสำเร็จ', `เพิ่มเมนู "${name}" (${category} • ฿${price.toFixed(2)}) เรียบร้อยแล้ว`);
+            showToast('บันทึกสำเร็จ', `เพิ่มเมนู "${name}" (${category} • ฿${price.toFixed(2)}) และจัดเก็บลงเครื่องเรียบร้อยแล้ว`);
         }
 
         function deleteMenuItem(code) {
@@ -1976,9 +2041,10 @@
             if (index !== -1) {
                 const removedName = menuData[index].name;
                 menuData.splice(index, 1);
+                saveStoredData(STORAGE_KEYS.MENUS, menuData);
                 renderMenuGrid();
                 renderPosItems();
-                showToast('ลบรายการแล้ว', `ลบเมนู "${removedName}" ออกจากระบบแล้ว`);
+                showToast('ลบรายการแล้ว', `ลบเมนู "${removedName}" ออกจากระบบและอัปเดตข้อมูลแล้ว`);
             }
         }
 
@@ -2251,9 +2317,13 @@
             }
 
             receiptCounter++;
+            saveStoredData(STORAGE_KEYS.INVENTORY, inventoryData);
+            saveStoredData(STORAGE_KEYS.COUNTERS, { saleCounter: saleCounter, receiptCounter: receiptCounter });
+
             renderInventoryTable();
             closeGoodsReceiptModal();
-            showToast('บันทึกสำเร็จ!', `บันทึกรับเข้า ${receiptId} (${menuItem.name} +${qty} ${unit}) เรียบร้อยแล้ว`);
+            updateStatsDisplay();
+            showToast('บันทึกสำเร็จ!', `บันทึกรับเข้า ${receiptId} (${menuItem.name} +${qty} ${unit}) และบันทึกข้อมูลถาวรแล้ว`);
         }
 
         function renderInventoryTable(items = inventoryData) {
@@ -2356,8 +2426,10 @@
             const item = inventoryData.find(i => (i.id === itemId || i.code === itemId));
             if (item) {
                 item.stock += 5;
+                saveStoredData(STORAGE_KEYS.INVENTORY, inventoryData);
                 renderInventoryTable();
-                showToast('เพิ่มสต็อกด่วน', `เพิ่ม ${item.name} +5 ${item.unit} สำเร็จ`);
+                updateStatsDisplay();
+                showToast('เพิ่มสต็อกด่วน', `เพิ่ม ${item.name} +5 ${item.unit} และบันทึกสำเร็จ`);
             }
         }
 
@@ -2906,13 +2978,17 @@
                 }
             });
 
+            saveStoredData(STORAGE_KEYS.SALES, salesData);
+            saveStoredData(STORAGE_KEYS.INVENTORY, inventoryData);
+            saveStoredData(STORAGE_KEYS.COUNTERS, { saleCounter: saleCounter, receiptCounter: receiptCounter });
+
             updateStatsDisplay();
             renderInventoryTable();
             renderSalesTable();
 
             cart = [];
             renderCart();
-            showToast('ชำระเงินสำเร็จ!', `ยอดรวม ฿${subtotal.toFixed(2)} บันทึกออเดอร์และตัดสต็อกเรียบร้อยแล้ว`);
+            showToast('ชำระเงินสำเร็จ!', `ยอดรวม ฿${subtotal.toFixed(2)} บันทึกออเดอร์ ตัดสต็อก และจัดเก็บข้อมูลถาวรเรียบร้อยแล้ว`);
         }
 
         function renderSalesTable(items = salesData) {
@@ -3172,18 +3248,25 @@
         window.filterPosCategory = filterPosCategory;
         window.updateStatsDisplay = updateStatsDisplay;
         window.showToast = showToast;
+        window.saveAllAppState = saveAllAppState;
 
         document.addEventListener('DOMContentLoaded', () => {
+            // 1. Initialize persistent state from localStorage
+            initPersistentState();
+
+            // 2. Load stored custom logo
             const storedLogo = loadStoredLogo();
             if (storedLogo) {
                 applyLogoToAllElements(storedLogo);
             }
 
+            // 3. Check active user session
             const savedUser = getUserSession();
             if (savedUser) {
                 applyAuthenticatedUser(savedUser, true);
             }
 
+            // 4. Render all views with persisted data
             renderMenuGrid();
             renderPosItems();
             renderInventoryTable();
